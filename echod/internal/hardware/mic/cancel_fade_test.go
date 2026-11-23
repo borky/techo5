@@ -10,6 +10,7 @@ import (
 // run ends on is the microphone again, faded in from what was still in flight.
 func TestCancellerFadesAtTheSwitches(t *testing.T) {
 	c := newCanceller()
+	c.suppressing = true
 	mic := make([]int16, FrameSamples)
 	for i := range mic {
 		mic[i] = int16(4000 * math.Sin(2*math.Pi*300*float64(i)/Rate))
@@ -50,5 +51,51 @@ func TestCancellerFadesAtTheSwitches(t *testing.T) {
 	}
 	if !c.starting {
 		t.Error("after the run the suppressor was not set to fade into the next one")
+	}
+}
+
+// Off, which is the default, the suppressor is not in the path: a run's first block is the filter's
+// output from its first sample. Turned off in the middle of a run, the next block fades from what it
+// still held into the filter's output, and the one after is the filter's alone.
+func TestSuppressorOffIsTheFilterAlone(t *testing.T) {
+	src := &Source{cancel: newCanceller()}
+	c := src.cancel
+	if src.Suppressing() {
+		t.Fatal("the suppressor is on by default")
+	}
+	mic := make([]int16, FrameSamples)
+	for i := range mic {
+		mic[i] = int16(4000 * math.Sin(2*math.Pi*300*float64(i)/Rate))
+	}
+	first := c.apply(rawFrame(0, true), mic)
+	if first == nil || first[switchFade+10] == 0 {
+		t.Fatal("with the suppressor off, a run's first block is silence past the fade: it ran")
+	}
+
+	src.SetSuppressing(true)
+	for n := 1; n < 20; n++ {
+		c.apply(rawFrame(n, true), mic)
+	}
+	src.SetSuppressing(false)
+	if !c.stopping {
+		t.Fatal("turned off during a run, it was not set to fade out")
+	}
+	c.apply(rawFrame(20, true), mic)
+	if c.stopping {
+		t.Error("the fade out did not happen on the next block")
+	}
+	// The block after is the filter's own output, undelayed: the same as a canceller that never
+	// suppressed, fed the same blocks.
+	plain := newCanceller()
+	for n := 0; n <= 21; n++ {
+		want := plain.apply(rawFrame(n, true), mic)
+		if n == 21 {
+			got := c.apply(rawFrame(n, true), mic)
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("sample %d after turning it off is %d, the filter alone gives %d", i, got[i], want[i])
+				}
+			}
+		}
 	}
 }

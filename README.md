@@ -572,12 +572,13 @@ The Dot's seven are a ring of six plus one in the middle, the best array of the 
 
 The wake word runs on the device itself. After that, what you say goes to your Home Assistant
 pipeline, so misheard words are mostly down to the speech to text you have set up in HA, not the
-mics. There's echo cancellation too, with a suppressor for the echo the canceller leaves behind, so
-it can hear you over its own music.
+mics. There's echo cancellation too, so it can hear you over its own music.
 
 You can tune a lot of it from Home Assistant: **Microphone gain**, **Microphone mixing** (all
 averaged, center mic only, delay and sum, or beamformer), **Microphone noise reduction**,
-**Microphone echo cancellation** and the **Wake word threshold**. The defaults are what worked best
+**Microphone echo cancellation**, **Microphone echo suppression** (off by default: it takes down
+what the echo canceller leaves behind over loud music, at up to 10 dB off a voice where the music is)
+and the **Wake word threshold**. The defaults are what worked best
 in my testing, but every room is different.
 
 If the device's own models don't hear your voice well, Home Assistant's wake word engine

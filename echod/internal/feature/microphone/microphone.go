@@ -28,6 +28,7 @@ type Microphone struct {
 	gain        *esphome.Number
 	leveling    *esphome.Switch
 	cancel      *esphome.Switch
+	suppress    *esphome.Switch // the residual echo suppressor after the built-in canceller
 	engine      *esphome.Select
 	denoise     *esphome.Switch
 	ends        *esphome.Switch
@@ -76,6 +77,14 @@ func build() *Microphone {
 			Base: esphome.Base{
 				ObjectID: "microphone_cancel_echo",
 				Name:     "Microphone echo cancellation",
+				Icon:     "mdi:waveform",
+				Category: esphome.CategoryConfig,
+			},
+		},
+		suppress: &esphome.Switch{
+			Base: esphome.Base{
+				ObjectID: "microphone_echo_suppression",
+				Name:     "Microphone echo suppression",
 				Icon:     "mdi:waveform",
 				Category: esphome.CategoryConfig,
 			},
@@ -146,7 +155,7 @@ func build() *Microphone {
 
 	for _, b := range []*esphome.Base{
 		&m.aspSelected.Base, &m.aspActive.Base,
-		&m.mixing.Base, &m.gain.Base, &m.leveling.Base, &m.cancel.Base, &m.engine.Base, &m.denoise.Base,
+		&m.mixing.Base, &m.gain.Base, &m.leveling.Base, &m.cancel.Base, &m.suppress.Base, &m.engine.Base, &m.denoise.Base,
 		&m.ends.Base, &m.preroll.Base, &m.pause.Base, &m.sensitivity.Base,
 	} {
 		b.DeviceID = component.DeviceMicrophone
@@ -186,6 +195,14 @@ func build() *Microphone {
 		source.SetCanceling(on)
 		if err := config.Set().Microphone().Cancel(on); err != nil {
 			slog.Error("saving the echo cancellation setting failed", "err", err)
+		}
+	}
+
+	m.suppress.OnCommand = func(on bool) {
+		m.suppress.Set(on)
+		source.SetSuppressing(on)
+		if err := config.Set().Microphone().Suppress(on); err != nil {
+			slog.Error("saving the echo suppression setting failed", "err", err)
 		}
 	}
 
@@ -242,7 +259,7 @@ func build() *Microphone {
 func (m *Microphone) Name() string { return "microphone settings" }
 
 func (m *Microphone) Entities() []esphome.Entity {
-	return append([]esphome.Entity{m.aspSelected, m.aspActive, m.mixing, m.gain, m.leveling, m.cancel, m.engine, m.denoise, m.ends, m.preroll,
+	return append([]esphome.Entity{m.aspSelected, m.aspActive, m.mixing, m.gain, m.leveling, m.cancel, m.suppress, m.engine, m.denoise, m.ends, m.preroll,
 		m.pause, m.sensitivity},
 		buildEntities()...)
 }
@@ -270,6 +287,10 @@ func (m *Microphone) Restore(c config.Config) {
 	m.cancel.Set(c.Microphone.Cancel)
 	source.SetCanceling(c.Microphone.Cancel)
 	slog.Info("restored", "what", m.cancel.ObjectID, "using", c.Microphone.Cancel)
+
+	m.suppress.Set(c.Microphone.Suppress)
+	source.SetSuppressing(c.Microphone.Suppress)
+	slog.Info("restored", "what", m.suppress.ObjectID, "using", c.Microphone.Suppress)
 
 	component.Restore(m.engine, c.Microphone.CancelEngine, setEngine)
 
