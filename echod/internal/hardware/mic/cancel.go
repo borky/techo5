@@ -50,6 +50,18 @@ func tapsWanted() int {
 // what it learns from it.
 const cancelMu = 0.1
 
+// suppressOver and suppressFloorDB set the residual echo suppressor after the built-in filter
+// (aec.Suppressor): twice the leftover echo it estimates is taken off, and no bin loses more than
+// 10 dB. Measured on an Echo Show 5 1st gen with loud music and the wake word said over it every five
+// seconds for two minutes, replayed through the daemon's own path: the filter alone heard it 5 times,
+// with the suppressor 7 or 8 (a change as small as its delay moves one either way), most scores rising
+// from 0.4-0.7 to over 0.9; 30 s of the same music alone scored nothing near a wake word either way.
+// A floor of -15 dB heard no more and took more off a voice; once over the estimate heard fewer.
+const (
+	suppressOver    = 2
+	suppressFloorDB = -10
+)
+
 // refQuiet is the mean square per sample, at int16 scale, below which the loopback counts as silence.
 // About -76 dBFS. Below it there is no echo to remove, so the filter is skipped entirely and the frame
 // costs nothing — which is what keeps this free on an idle device. It has to sit well under a
@@ -101,6 +113,11 @@ type canceller struct {
 
 	// hold counts down the samples still to filter after the loopback went quiet. Reader-only.
 	hold int
+
+	// sup takes down what the built-in filter leaves (suppressOver). WebRTC's canceller has its own.
+	// Every run restarts its audio, as its output starts SuppressorDelay late, and keeps what it
+	// learned of the leak, as the filter keeps its path. Reader-only.
+	sup *aec.Suppressor
 }
 
 func newCanceller() *canceller {
@@ -110,7 +127,7 @@ func newCanceller() *canceller {
 		slog.Error("echo cancellation unavailable", "err", err)
 		return nil
 	}
-	c := &canceller{engine: "builtin"}
+	c := &canceller{engine: "builtin", sup: aec.NewSuppressor(suppressOver, suppressFloorDB)}
 	c.filter.Store(f)
 	c.adapting.Store(f.Adapting())
 	return c
@@ -198,6 +215,7 @@ func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 		// Nothing to cancel. The filter keeps what it learned: the room has not changed just because
 		// the reply ended, so the next one starts converged rather than from nothing.
 		if c.active.Swap(false) {
+			c.sup.Restart()
 			slog.Info("echo cancellation idle",
 				"best_db", float64(c.best.Load())/1000, "last_db", float64(c.erle.Load())/1000)
 			c.erle.Store(0)
@@ -219,6 +237,9 @@ func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 	if err != nil {
 		slog.Error("echo cancellation failed", "err", err)
 		return nil
+	}
+	if c.ext == nil {
+		out = c.sup.Process(mic, out)
 	}
 	erle := int64(erleDB * 1000)
 	c.erle.Store(erle)
