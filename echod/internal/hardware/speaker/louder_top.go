@@ -42,9 +42,13 @@ func LouderTopPossible() bool {
 // period, so the level changes at once; on a tuning with no lift, or played untuned, it does nothing.
 func (p *Player) SetLouderTop(on bool) { p.louderTop.Store(on) }
 
-// inFront is the curve to put in front of the tuning now: the lifted one while Louder top volume is
-// on and this tuning has one, else first (nil when there is none).
+// inFront is the curve to put in front of the tuning now: the stock firmware's while Stock volume
+// curve is on and this tuning has one, else the lifted one while Louder top volume is on and this
+// tuning has one, else first (nil when there is none).
 func (p *Player) inFront() *[VolumeSteps + 1]float64 {
+	if p.stockOn.Load() && p.stock != nil {
+		return p.stock
+	}
 	if p.louderTop.Load() && p.lifted != nil {
 		return p.lifted
 	}

@@ -99,6 +99,9 @@ type Player struct {
 	// top is the Louder top volume switch (speaker.Player.SetLouderTop, #304), nil where no tuning
 	// this build plays has a lift for it.
 	top *esphome.Switch
+	// stock is the Stock volume curve switch (speaker.Player.SetStockCurve), nil where the tuning this
+	// device plays has no stock curve for it.
+	stock *esphome.Switch
 	// jackSleep is the Headphone jack sleeps when idle switch (speaker.Player.SetJackSleep, #537), nil
 	// where the build has no jack.
 	jackSleep *esphome.Switch
@@ -417,6 +420,14 @@ func build() *Player {
 		}
 		p.top.OnCommand = p.SetLouderTop
 	}
+	if speaker.Get().StockCurveAvailable() {
+		p.stock = &esphome.Switch{
+			Base: esphome.Base{ObjectID: "stock_volume_curve", Name: "Stock volume curve",
+				Icon: "mdi:chart-bell-curve-cumulative", Category: esphome.CategoryConfig,
+				DeviceID: component.DevicePlayback},
+		}
+		p.stock.OnCommand = p.SetStockCurve
+	}
 	if speaker.JackSleepPossible() {
 		p.jackSleep = &esphome.Switch{
 			Base: esphome.Base{ObjectID: "headphone_jack_sleep", Name: "Headphone jack sleeps when idle",
@@ -641,6 +652,26 @@ func (p *Player) SetLouderTop(on bool) {
 	slog.Info("setting changed", "setting", p.top.ObjectID, "using", on)
 }
 
+// SetStockCurve turns Stock volume curve on or off, from Home Assistant or the setup page.
+func (p *Player) SetStockCurve(on bool) {
+	if p.stock == nil {
+		return
+	}
+	if err := config.Set().Speaker().StockCurve(on); err != nil {
+		slog.Error("saving a setting failed", "setting", p.stock.ObjectID, "err", err)
+		return
+	}
+	speaker.Get().SetStockCurve(on)
+	p.stock.Set(on)
+	slog.Info("setting changed", "setting", p.stock.ObjectID, "using", on)
+}
+
+// StockCurveAvailable is whether the Stock volume curve switch is put up on this device.
+func (p *Player) StockCurveAvailable() bool { return p.stock != nil }
+
+// StockCurve is whether Stock volume curve is on.
+func (p *Player) StockCurve() bool { return p.stock != nil && p.stock.Get() }
+
 // SetJackSleep turns the headphone jack's idle sleep on or off, from Home Assistant or the setup page.
 func (p *Player) SetJackSleep(on bool) {
 	if p.jackSleep == nil {
@@ -789,6 +820,11 @@ func (p *Player) Restore(c config.Config) {
 		p.top.Set(c.Speaker.LouderTop)
 		speaker.Get().SetLouderTop(c.Speaker.LouderTop)
 		slog.Info("restored", "what", p.top.ObjectID, "using", c.Speaker.LouderTop)
+	}
+	if p.stock != nil {
+		p.stock.Set(c.Speaker.StockCurve)
+		speaker.Get().SetStockCurve(c.Speaker.StockCurve)
+		slog.Info("restored", "what", p.stock.ObjectID, "using", c.Speaker.StockCurve)
 	}
 	if p.jackSleep != nil {
 		p.jackSleep.Set(c.Speaker.JackSleep)
