@@ -114,6 +114,11 @@ func (s *Suppressor) Restart() {
 	s.ready = append(s.ready[:0], make([]int16, supHop)...)
 }
 
+// InFlight is what Process will hand back next, up to a hop of it at least: what a caller that stops
+// using the suppressor can fade out of, rather than cutting it off where it is. The slice is the
+// suppressor's own and good until the next call.
+func (s *Suppressor) InFlight() []int16 { return s.ready }
+
 // Process takes what the canceller was given (in) and what it gave back (out), the same length, and
 // returns as many samples of out with the leftover echo taken down, SuppressorDelay samples late. The
 // slice returned is the suppressor's own and good until the next call.

@@ -115,9 +115,35 @@ type canceller struct {
 	hold int
 
 	// sup takes down what the built-in filter leaves (suppressOver). WebRTC's canceller has its own.
-	// Every run restarts its audio, as its output starts SuppressorDelay late, and keeps what it
-	// learned of the leak, as the filter keeps its path. Reader-only.
+	// Its output is SuppressorDelay (40 ms) late, so a run starting puts that much silence into what
+	// the microphone hands on, and a run ending drops the 40 ms still in flight: a wake chime that
+	// starts a run while someone goes on talking leaves a 40 ms pause in their words. The switches
+	// fade over switchFade rather than step, and every start restarts its audio (restartSup) and
+	// keeps what it learned of the leak, as the filter keeps its path. Reader-only.
 	sup *aec.Suppressor
+	// starting says the next block out of sup is the first since it restarted, to fade into.
+	starting bool
+}
+
+// switchFade is how long, in samples, the switches into and out of the suppressor's late output fade
+// across: 10 ms, which takes the step out without smearing a word.
+const switchFade = Rate / 100
+
+// restartSup starts the suppressor's audio over, for a run starting or the engine changing under one:
+// what it held belongs to another stretch, or to the other engine's.
+func (c *canceller) restartSup() {
+	c.sup.Restart()
+	c.starting = true
+}
+
+// fade writes into dst, over its first switchFade samples, a fade from from to to; past that, to.
+func fade(dst, from, to []int16) {
+	n := min(len(dst), len(from), len(to))
+	copy(dst, to[:n])
+	for i := range min(n, switchFade) {
+		r := float32(i) / switchFade
+		dst[i] = int16(float32(from[i])*(1-r) + float32(to[i])*r)
+	}
 }
 
 func newCanceller() *canceller {
@@ -127,7 +153,7 @@ func newCanceller() *canceller {
 		slog.Error("echo cancellation unavailable", "err", err)
 		return nil
 	}
-	c := &canceller{engine: "builtin", sup: aec.NewSuppressor(suppressOver, suppressFloorDB)}
+	c := &canceller{engine: "builtin", sup: aec.NewSuppressor(suppressOver, suppressFloorDB), starting: true}
 	c.filter.Store(f)
 	c.adapting.Store(f.Adapting())
 	return c
@@ -155,6 +181,7 @@ func (c *canceller) fitTaps(taps int) {
 // setEngine picks the canceller: "builtin" is the LMS filter above, "webrtc" the helper process.
 // It reports what it settled on: webrtc falls back to builtin when the helper cannot start.
 func (c *canceller) setEngine(name string) string {
+	c.restartSup()
 	if c.ext != nil {
 		c.ext.Close()
 		c.ext = nil
@@ -186,6 +213,7 @@ func (c *canceller) process(mic, ref []int16) ([]int16, float64, error) {
 		c.ext.Close()
 		c.ext = nil
 		c.engine = "builtin"
+		c.restartSup()
 	}
 	f := c.filter.Load()
 	out, err := f.Process(mic, ref)
@@ -196,7 +224,8 @@ func (c *canceller) process(mic, ref []int16) ([]int16, float64, error) {
 }
 
 // apply returns mic, one fixed path (see cancelInput), with the echo removed, or nil when there is
-// nothing playing and the caller should use the mix it already has.
+// nothing playing and the caller should use the mix it already has. The block a run ends on is mic,
+// faded in from what the suppressor still held (switchFade).
 func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 	n := len(mic)
 	if cap(c.ref) < n {
@@ -215,11 +244,19 @@ func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 		// Nothing to cancel. The filter keeps what it learned: the room has not changed just because
 		// the reply ended, so the next one starts converged rather than from nothing.
 		if c.active.Swap(false) {
-			c.sup.Restart()
 			slog.Info("echo cancellation idle",
 				"best_db", float64(c.best.Load())/1000, "last_db", float64(c.erle.Load())/1000)
 			c.erle.Store(0)
 			c.best.Store(0)
+			if c.ext == nil {
+				// The first block back on the plain path fades in from what the suppressor still
+				// held, rather than stepping from 40 ms ago to now.
+				c.mono = append(c.mono[:0], mic...)
+				fade(c.mono, c.sup.InFlight(), mic)
+				c.restartSup()
+				return c.mono
+			}
+			c.restartSup()
 		}
 		return nil
 	}
@@ -240,6 +277,12 @@ func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 	}
 	if c.ext == nil {
 		out = c.sup.Process(mic, out)
+		if c.starting {
+			// The suppressor's first block is silence: fade into it from the microphone as it is now,
+			// which carries on from the plain path the block before.
+			c.starting = false
+			fade(out, mic, out)
+		}
 	}
 	erle := int64(erleDB * 1000)
 	c.erle.Store(erle)
