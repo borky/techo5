@@ -53,6 +53,9 @@ type Source struct {
 	devMu sync.Mutex
 	pcm   capture
 
+	// rawRec is the fork's raw capture diagnostic (rawcapture.go), idle unless asked for.
+	rawRec rawCapture
+
 	mu sync.Mutex
 
 	// Resident External session: synchronized with final shared mono publish.
@@ -469,6 +472,7 @@ func (s *Source) broadcastSelected(raw []byte, cut bool, external *aspResponse) 
 	if cut {
 		clear(raw)
 	}
+	s.rawRec.add(raw)
 
 	// Everything downstream reads the same single channel, whichever way it was made: wake detection
 	// and what Home Assistant transcribes should never disagree about what was heard.
