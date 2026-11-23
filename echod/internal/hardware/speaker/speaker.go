@@ -1098,7 +1098,8 @@ func (p *Player) fill(buf []byte) {
 	p.sinkRing(needOn, need)
 	gain, step := p.Volume(), mainStep
 	mediaK, bellK, queueK, underK := float32(1), float32(0), float32(1), float32(1)
-	// Read once, so a period goes out on one curve even when Louder top volume changes during it.
+	// Read once, so a period goes out on one curve even when Louder top volume or Stock volume curve
+	// changes during it.
 	curve := p.inFront()
 	if ringing || queueStep != mainStep || underStep != mainStep {
 		var first *[VolumeSteps + 1]float64

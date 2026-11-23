@@ -722,6 +722,9 @@ func (p *Player) Entities() []esphome.Entity {
 	if p.top != nil {
 		out = append(out, p.top)
 	}
+	if p.stock != nil {
+		out = append(out, p.stock)
+	}
 	if speaker.HasJack {
 		out = append(out, p.output)
 	}
