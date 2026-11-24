@@ -4,7 +4,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	esphome "github.com/ygelfand/go-esphome-device"
+
 	"github.com/HuskerMinion/techo5/echod/internal/config"
+	"github.com/HuskerMinion/techo5/echod/internal/feature/wakeword"
 	"github.com/HuskerMinion/techo5/echod/internal/hardware/speaker"
 )
 
@@ -57,4 +60,39 @@ func TestVoiceQualityDecidesSpeakerAndDelivery(t *testing.T) {
 	if got := deliveryFor(0); got != config.DeliveryWhole {
 		t.Errorf("whole file became %q", got)
 	}
+}
+
+// At High, on a connection offered no speaker, a slot set to Streamed has its reply fetched early: the
+// early offer is taken, a stream starting does not claim the turn for a stream that is not coming, and
+// the url at the end of the speech is the same reply, not fetched a second time.
+func TestAStreamedSlotAtHighIsFetchedEarlyOnce(t *testing.T) {
+	c := thinkingTurn(t)
+	if err := config.Set().Wake(0).Delivery(config.DeliveryStream); err != nil {
+		t.Fatal(err)
+	}
+	if wakeword.Delivery(0) != config.DeliveryStream {
+		t.Skip("could not set the delivery")
+	}
+	if err := config.Set().Speaker().VoiceQuality(config.VoiceHigh); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unstreamed.Store(false) })
+	if Offer()&esphome.FeatureSpeaker != 0 {
+		t.Fatal("at High the speaker was offered")
+	}
+	url, release := heldSpeech(t)
+
+	c.runURL = url
+	c.handle(event{kind: evEarlyReply})
+	if !c.reply.early || c.reply.url != url {
+		t.Fatalf("the early offer was not taken: early %v, url %q", c.reply.early, c.reply.url)
+	}
+	took := c.replies
+	c.handle(event{kind: evStreamStart})
+	c.handle(event{kind: evReplyURL, url: url})
+	if c.replies != took || c.reply.url != url {
+		t.Fatalf("the reply was started again (%d replies, want %d; url %q)", c.replies, took, c.reply.url)
+	}
+	close(release)
+	next(t, c, evPlayed)
 }

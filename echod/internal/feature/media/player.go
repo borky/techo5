@@ -700,8 +700,12 @@ func (p *Player) SetVoiceQuality(q config.VoiceQuality) {
 // it connect again, once the device is idle rather than in the middle of a reply or a call. By then the
 // setting is saved, and the formats are put on the player between the two connections
 // (describeFormats). Until then, speech it converts to the old rate is brought to the new one here.
+// Where replies play on another player, neither the formats nor the offer depend on the quality
+// (FormatsFor, voice.Offer), so there is nothing to reconnect for.
 func (p *Player) setVoiceQuality(q config.VoiceQuality) config.VoiceQuality {
-	if q.Rate() != config.Get().Speaker.VoiceQuality.Rate() {
+	c := config.Get()
+	elsewhere := layout.HasMicrophone() && c.Brain.RepliesElsewhere()
+	if !elsewhere && q.Rate() != c.Speaker.VoiceQuality.Rate() {
 		component.ReconnectWhenIdle.Emit(struct{}{})
 	}
 	return q

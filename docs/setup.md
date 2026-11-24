@@ -1396,8 +1396,8 @@ crisp are (s, t, f). **High (24 kHz)** is the rate Home Assistant Cloud's voices
 they arrive whole; **Highest (48 kHz)** is the speaker's own rate, for a text to speech engine that
 makes more than 24 kHz. Every choice plays at the same loudness while **Voice resampling** is at its
 default, Band limited (the 24 and 48 kHz voices always go through a filter of that kind). Home
-Assistant learns the new rate by connecting again, which the device has it do once nothing is
-playing or being said. It applies to replies and to announcements. Home Assistant makes a reply at
+Assistant learns the new rate by connecting again, which the device has it do once no reply, call or
+announcement is in progress (music playing doesn't hold it back). It applies to replies and to announcements. Home Assistant makes a reply at
 16 kHz for a device that says it can play speech streamed over the API, so above Standard the device
 stops saying so: replies come as files at the chosen rate, and a wake word whose **Reply delivery**
 is **Streamed** has its reply fetched as **Early** until the quality is Standard again. With a

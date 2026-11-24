@@ -16,6 +16,7 @@ import (
 	"github.com/HuskerMinion/techo5/echod/internal/component"
 	"github.com/HuskerMinion/techo5/echod/internal/config"
 	"github.com/HuskerMinion/techo5/echod/internal/hardware/speaker"
+	"github.com/HuskerMinion/techo5/echod/internal/layout"
 )
 
 // atOut is a speaker that also plays Voice Quality's rates, and keeps each piece with its rate.
@@ -163,6 +164,17 @@ func TestVoiceQualityReachesTheOfferedFormats(t *testing.T) {
 	p.describeFormats(config.Get())
 	if got := p.mp.SupportedFormats[1].SampleRate; got != 48000 {
 		t.Fatalf("announcements offered at %d Hz after the reconnect, want 48000", got)
+	}
+
+	// With replies on another player the quality changes neither, and asks for no reconnect where the
+	// device can hear (a device that cannot keeps its own formats, so it still does).
+	if err := config.Set().Brain().SetReplyPlayer("media_player.kitchen"); err != nil {
+		t.Fatal(err)
+	}
+	asked = 0
+	p.setVoiceQuality(config.VoiceHigh)
+	if want := map[bool]int{true: 0, false: 1}[layout.HasMicrophone()]; asked != want {
+		t.Errorf("with a reply player, %d reconnects asked for, want %d", asked, want)
 	}
 }
 
