@@ -121,8 +121,10 @@ type canceller struct {
 	// fade over switchFade rather than step, and every start restarts its audio (restartSup) and
 	// keeps what it learned of the leak, as the filter keeps its path. Reader-only.
 	sup *aec.Suppressor
-	// starting says the next block out of sup is the first since it restarted, to fade into.
-	starting bool
+	// starting says the next block out of sup is the first since it restarted, to fade into, and
+	// fromFilter that it fades from the filter's output rather than the microphone: the block before
+	// was canceled (the suppressor turned on, or the engine changed, in the middle of a run).
+	starting, fromFilter bool
 	// suppressing is whether sup runs at all (SetSuppressing), and stopping that it was just turned
 	// off, so the next block fades from what it still held into the filter's own output.
 	suppressing, stopping bool
@@ -133,10 +135,13 @@ type canceller struct {
 const switchFade = Rate / 100
 
 // restartSup starts the suppressor's audio over, for a run starting or the engine changing under one:
-// what it held belongs to another stretch, or to the other engine's.
+// what it held belongs to another stretch, or to the other engine's. Nothing is left in flight to fade
+// out of, so a fade out still waiting is dropped.
 func (c *canceller) restartSup() {
 	c.sup.Restart()
 	c.starting = true
+	c.fromFilter = c.active.Load()
+	c.stopping = false
 }
 
 // fade writes into dst, over its first switchFade samples, a fade from from to to; past that, to.
@@ -251,7 +256,7 @@ func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 				"best_db", float64(c.best.Load())/1000, "last_db", float64(c.erle.Load())/1000)
 			c.erle.Store(0)
 			c.best.Store(0)
-			if c.ext == nil && c.suppressing {
+			if c.ext == nil && (c.suppressing || c.stopping) {
 				// The first block back on the plain path fades in from what the suppressor still
 				// held, rather than stepping from 40 ms ago to now.
 				c.mono = append(c.mono[:0], mic...)
@@ -284,12 +289,18 @@ func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 		c.restartSup()
 	}
 	if c.ext == nil && c.suppressing {
-		out = c.sup.Process(mic, out)
+		filtered := out
+		out = c.sup.Process(mic, filtered)
 		if c.starting {
-			// The suppressor's first block is silence: fade into it from the microphone as it is now,
-			// which carries on from the plain path the block before.
-			c.starting = false
-			fade(out, mic, out)
+			// The suppressor's first block is silence: fade into it from what the block before carries
+			// on into, the microphone as it is now at a run's start (the plain path), or the filter's
+			// output when the suppressor came in during the run.
+			from := mic
+			if c.fromFilter {
+				from = filtered
+			}
+			c.starting, c.fromFilter = false, false
+			fade(out, from, out)
 		}
 	}
 	erle := int64(erleDB * 1000)
@@ -387,7 +398,8 @@ func (s *Source) SetSuppressing(on bool) {
 	case on && !c.suppressing:
 		c.restartSup()
 	case !on && c.suppressing:
-		c.stopping = c.active.Load()
+		// Only where the suppressor was in the path: in a run, on the built-in canceller.
+		c.stopping = c.active.Load() && c.ext == nil
 	}
 	c.suppressing = on
 }
