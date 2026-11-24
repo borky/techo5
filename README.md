@@ -577,7 +577,9 @@ mics. There's echo cancellation too, so it can hear you over its own music.
 You can tune a lot of it from Home Assistant: **Microphone gain**, **Microphone mixing** (all
 averaged, center mic only, delay and sum, or beamformer), **Microphone noise reduction**,
 **Microphone echo cancellation**, **Microphone echo suppression** (off by default: it takes down
-what the echo canceller leaves behind over loud music, at up to 10 dB off a voice where the music is)
+what the echo canceller leaves behind over loud music, at up to 10 dB off a voice where the music is;
+it needs Microphone echo cancellation on with the built-in canceller, and does nothing with
+WebRTC's, which a call uses)
 and the **Wake word threshold**. The defaults are what worked best
 in my testing, but every room is different.
 
