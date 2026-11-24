@@ -3,8 +3,6 @@ package voice
 import (
 	"sync/atomic"
 	"time"
-
-	"github.com/HuskerMinion/techo5/echod/internal/hardware/speaker"
 )
 
 // spokenPace is how many characters of a reply a voice says in a second, near enough: the whole of a
@@ -53,9 +51,9 @@ func replyPlaying(at time.Time, seconds float64, whole bool) {
 	spoken.CompareAndSwap(c, &replyClock{text: text, at: at, seconds: seconds, whole: whole})
 }
 
-// replyAudioSeconds is how long bytes of reply audio play for.
-func replyAudioSeconds(bytes int) float64 {
-	return float64(bytes) / float64(2*speaker.VoiceRate)
+// replyAudioSecondsAt is how long bytes of reply audio at rate play for.
+func replyAudioSecondsAt(bytes, rate int) float64 {
+	return float64(bytes) / float64(2*rate)
 }
 
 // Spoken is how much of text has been said by now, from 0 to 1, for a screen that turns the pages of a

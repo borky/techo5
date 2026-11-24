@@ -442,6 +442,9 @@ func (p *Phone) Button() bool {
 	return false
 }
 
+// Talking is whether a call is in progress, which is when Say has somewhere to send speech.
+func (p *Phone) Talking() bool { return p.State().Phase == Talking }
+
 // Say sends 16 kHz speech into the call in progress, and reports whether there was one.
 func (p *Phone) Say(samples []int16) bool {
 	if p.State().Phase != Talking {

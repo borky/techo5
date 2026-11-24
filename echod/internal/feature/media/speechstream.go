@@ -23,6 +23,30 @@ type VoiceOut interface {
 	Queued() int
 }
 
+// voiceAtOut is a VoiceOut that also plays speech at Voice Quality's higher rates (the speaker's
+// player does). Speech at such a rate handed to one that does not is brought down to the pipeline's.
+type voiceAtOut interface {
+	PlayVoiceAt(mono []int16, rate int)
+}
+
+// play hands the stream's speech to p: at its rate to a speaker that plays it there, and brought down
+// to the pipeline's through one converter for the whole stream to one that does not, so the pieces join.
+func (s *SpeechStream) play(p VoiceOut, mono []int16) {
+	r := s.rate()
+	if r == speaker.VoiceRate {
+		p.PlayVoice(mono)
+		return
+	}
+	if at, ok := p.(voiceAtOut); ok {
+		at.PlayVoiceAt(mono, r)
+		return
+	}
+	if s.toPipeline == nil {
+		s.toPipeline = newRateConv(r, speaker.VoiceRate)
+	}
+	p.PlayVoice(s.toPipeline.Run(mono))
+}
+
 // SpeechStream is speech arriving in pieces, played as it goes through a cushion: Buffer of it is held
 // before anything plays, and after the queue runs dry SpeechResume is held before playing again. It is
 // what a streamed reply and a streamed announcement both play through. One is used for one piece of
@@ -46,6 +70,17 @@ type SpeechStream struct {
 	// Started is told once, just before the first audio is queued.
 	Started func()
 
+	// Rate is the rate the speech arrives at: zero is the pipeline's, speaker.VoiceRate, and speech
+	// fetched at Voice Quality's rate says so (SpeechRate). What goes into a call through Say is at the
+	// pipeline's rate whatever this is.
+	Rate int
+	// toCall brings speech at Rate down to the call's, piece by piece, where they differ, and
+	// toPipeline down to the speaker's where the speaker plays only the pipeline's rate.
+	toCall, toPipeline *rateConv
+	// SayWanted, when set, says whether a call wants the speech just now, so speech at a higher rate
+	// is brought down to the call's only while one does.
+	SayWanted func() bool
+
 	// held is audio waiting for the cushion to fill, and flowing says the cushion is built and audio
 	// is going straight through.
 	held    []int16
@@ -62,7 +97,7 @@ type SpeechStream struct {
 	playingAt time.Time
 }
 
-// Take is a piece of the speech: 16-bit mono samples at speaker.VoiceRate in little-endian bytes. It
+// Take is a piece of the speech: 16-bit mono samples at the stream's rate in little-endian bytes. It
 // reports whether anything was queued, which is not until the cushion has filled.
 func (s *SpeechStream) Take(data []byte, p VoiceOut) bool {
 	samples := make([]int16, len(data)/2)
@@ -83,7 +118,7 @@ func (s *SpeechStream) Take(data []byte, p VoiceOut) bool {
 	if !s.playingAt.IsZero() {
 		want = SpeechResume
 	}
-	if !s.flowing && len(s.held) < voiceSamples(want) {
+	if !s.flowing && len(s.held) < samplesAt(want, s.rate()) {
 		return false
 	}
 
@@ -95,8 +130,23 @@ func (s *SpeechStream) Take(data []byte, p VoiceOut) bool {
 	return true
 }
 
-// Finish plays whatever is still held, which will never be joined by more.
-func (s *SpeechStream) Finish(p VoiceOut) { s.flush(p) }
+// Finish plays whatever is still held, which will never be joined by more, and what the converters
+// were holding back to see past it.
+func (s *SpeechStream) Finish(p VoiceOut) {
+	s.flush(p)
+	if s.toCall != nil && s.Say != nil {
+		if tail := s.toCall.Flush(); len(tail) > 0 {
+			s.Say(tail)
+		}
+		s.toCall = nil
+	}
+	if s.toPipeline != nil {
+		if tail := s.toPipeline.Flush(); len(tail) > 0 {
+			p.PlayVoice(tail)
+		}
+		s.toPipeline = nil
+	}
+}
 
 func (s *SpeechStream) flush(p VoiceOut) {
 	out := s.held
@@ -114,12 +164,28 @@ func (s *SpeechStream) flush(p VoiceOut) {
 		s.Started = nil
 	}
 	if s.Say != nil {
-		s.Say(out)
+		if r := s.rate(); r == speaker.VoiceRate {
+			s.Say(out)
+		} else if s.SayWanted == nil || s.SayWanted() {
+			if s.toCall == nil {
+				s.toCall = newRateConv(r, speaker.VoiceRate)
+			}
+			s.Say(s.toCall.Run(out))
+		}
 	}
 	if s.Louder {
+		s.louder.Rate = s.rate()
 		out = ForSpeaker(out, &s.louder)
 	}
-	p.PlayVoice(out)
+	s.play(p, out)
+}
+
+// rate is the rate the speech is at.
+func (s *SpeechStream) rate() int {
+	if s.Rate <= 0 {
+		return speaker.VoiceRate
+	}
+	return s.Rate
 }
 
 // Bytes is how much speech has arrived, Peak the loudest sample of it as it arrived, and PlayingAt
@@ -128,9 +194,9 @@ func (s *SpeechStream) Bytes() int           { return s.bytes }
 func (s *SpeechStream) Peak() int            { return s.peak }
 func (s *SpeechStream) PlayingAt() time.Time { return s.playingAt }
 
-// voiceSamples is a duration as a count of samples at speaker.VoiceRate.
-func voiceSamples(d time.Duration) int {
-	return int(d/time.Millisecond) * speaker.VoiceRate / 1000
+// samplesAt is a duration as a count of samples at rate.
+func samplesAt(d time.Duration, rate int) int {
+	return int(d/time.Millisecond) * rate / 1000
 }
 
 // PlaySpeech fetches speech Home Assistant is serving and plays it through s as it arrives, which is
@@ -142,13 +208,13 @@ func voiceSamples(d time.Duration) int {
 // that fails before any audio fails; one that fails part way, or stalls, has played what came and ends
 // there. One canceled returns the context's error, so whatever was to follow it is not started.
 func PlaySpeech(ctx context.Context, url string, s *SpeechStream, p VoiceOut) error {
-	err := fetchVoice(ctx, url, speechStall, func(data []byte) { s.Take(data, p) })
+	err := fetchVoice(ctx, url, speechStall, s.rate(), func(data []byte) { s.Take(data, p) })
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	s.Finish(p)
 	if s.bytes > 0 {
-		p.PlayVoice(make([]int16, speaker.VoiceRate*Tail/1000))
+		s.play(p, make([]int16, s.rate()*Tail/1000))
 	}
 	if err != nil && s.bytes > 0 {
 		slog.Warn("the announcement ended early", "err", err, "bytes", s.bytes)

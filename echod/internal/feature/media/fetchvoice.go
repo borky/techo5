@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -29,6 +30,12 @@ const voiceChunk = 1024
 // voiceTimeout. A variable so the tests need not wait for it.
 var speechStall = 20 * time.Second
 
+// minSpeechRate and maxSpeechRate bound the rates a body of speech is believed to be at.
+const (
+	minSpeechRate = 4000
+	maxSpeechRate = 192000
+)
+
 // errStalled is a body that stopped arriving part way.
 var errStalled = errors.New("the audio stopped arriving")
 
@@ -37,13 +44,19 @@ var errStalled = errors.New("the audio stopped arriving")
 // the API takes. A WAVE body plays as it comes. Anything else (MP3) is read whole and decoded as
 // Fetch would, then handed on at once.
 func FetchVoice(ctx context.Context, url string, each func([]byte)) error {
-	return fetchVoice(ctx, url, 0, each)
+	return fetchVoice(ctx, url, 0, speaker.VoiceRate, each)
 }
 
-// fetchVoice is FetchVoice, given up on once the body has gone stall without a byte; zero is never.
-// A reply fetched early is not given one: it starts before the agent has written anything, and a
-// slow agent is not a broken stream.
-func fetchVoice(ctx context.Context, url string, stall time.Duration, each func([]byte)) error {
+// FetchVoiceAt is FetchVoice with the samples at rate: Voice Quality's (SpeechRate) rather than the
+// pipeline's.
+func FetchVoiceAt(ctx context.Context, url string, rate int, each func([]byte)) error {
+	return fetchVoice(ctx, url, 0, rate, each)
+}
+
+// fetchVoice is FetchVoice at rate, given up on once the body has gone stall without a byte; zero is
+// never. A reply fetched early is not given one: it starts before the agent has written anything, and
+// a slow agent is not a broken stream.
+func fetchVoice(ctx context.Context, url string, stall time.Duration, rate int, each func([]byte)) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -77,14 +90,14 @@ func fetchVoice(ctx context.Context, url string, stall time.Duration, each func(
 		if len(whole) > mostAudio {
 			return fmt.Errorf("%s: more than %d bytes of audio for one announcement", url, mostAudio)
 		}
-		samples, err := decode(whole, resp.Header.Get("Content-Type"), url)
+		samples, err := decodeAt(whole, resp.Header.Get("Content-Type"), url, rate)
 		if err != nil {
 			return err
 		}
 		each(pcmBytes(samples))
 		return nil
 	}
-	if err := streamWAV(body, each); err != nil {
+	if err := streamWAV(body, rate, each); err != nil {
 		return stalled(ctx, err, url)
 	}
 	return nil
@@ -132,10 +145,10 @@ func (s *stallReader) stop() {
 	}
 }
 
-// streamWAV reads a WAVE body chunk by chunk to its data, then hands the data on as it arrives. The
-// data chunk's size is not trusted: a body still being written says 0 or the most it could be, so
-// the data runs to the end of the body.
-func streamWAV(r io.Reader, each func([]byte)) error {
+// streamWAV reads a WAVE body chunk by chunk to its data, then hands the data on as it arrives, as mono
+// at target. The data chunk's size is not trusted: a body still being written says 0 or the most it
+// could be, so the data runs to the end of the body.
+func streamWAV(r io.Reader, target int, each func([]byte)) error {
 	var riff [12]byte
 	if _, err := io.ReadFull(r, riff[:]); err != nil {
 		return err
@@ -178,22 +191,45 @@ func streamWAV(r io.Reader, each func([]byte)) error {
 		if format != 1 || bits != 16 || channels < 1 {
 			return fmt.Errorf("unsupported WAVE: format %#x, %d-bit, %d channels", format, bits, channels)
 		}
+		// A header that says no rate, or one no speech is made at, is a broken body: converted, it
+		// would be stretched to nothing or to forever.
+		if rate < minSpeechRate || rate > maxSpeechRate {
+			return fmt.Errorf("unsupported WAVE: %d Hz", rate)
+		}
 	}
 	if channels == 0 {
 		return errors.New("data before fmt")
 	}
+	// Which rate Home Assistant serves speech at is its proxy's to decide; the log says, so a Voice
+	// Quality that is not honored shows.
+	slog.Info("speech arriving", "rate", rate, "channels", channels, "playing at", target)
 
 	frame := 2 * channels
 	buf := make([]byte, voiceChunk*channels)
 	var held []byte
+	// At Voice Quality's rates a body at another rate goes through one converter from start to end, so
+	// the pieces join up; at the pipeline's it is converted piece by piece as it always was.
+	var conv *rateConv
+	if target != speaker.VoiceRate && rate != target {
+		conv = newRateConv(rate, target)
+	}
 	for {
 		n, err := r.Read(buf)
 		held = append(held, buf[:n]...)
 		if whole := len(held) / frame * frame; whole > 0 {
-			each(voiceBytes(held[:whole], channels, rate))
+			if target == speaker.VoiceRate {
+				each(voiceBytes(held[:whole], channels, rate))
+			} else if out := monoAt(held[:whole], channels, conv); len(out) > 0 {
+				each(out)
+			}
 			held = append(held[:0], held[whole:]...)
 		}
 		if errors.Is(err, io.EOF) {
+			if conv != nil {
+				if tail := conv.Flush(); len(tail) > 0 {
+					each(pcmBytes(tail))
+				}
+			}
 			return nil
 		}
 		if err != nil {
@@ -218,6 +254,26 @@ func voiceBytes(pcm []byte, channels, rate int) []byte {
 		mono[i] = int16(sum / channels)
 	}
 	return pcmBytes(toVoiceRate(mono, rate))
+}
+
+// monoAt is interleaved 16-bit frames as mono bytes, through conv when the rate is to change.
+func monoAt(pcm []byte, channels int, conv *rateConv) []byte {
+	if channels == 1 && conv == nil {
+		return append([]byte(nil), pcm...)
+	}
+	frames := len(pcm) / (2 * channels)
+	mono := make([]int16, frames)
+	for i := range mono {
+		var sum int
+		for c := range channels {
+			sum += int(int16(binary.LittleEndian.Uint16(pcm[(i*channels+c)*2:])))
+		}
+		mono[i] = int16(sum / channels)
+	}
+	if conv != nil {
+		mono = conv.Run(mono)
+	}
+	return pcmBytes(mono)
 }
 
 func pcmBytes(samples []int16) []byte {

@@ -292,6 +292,7 @@ var registered = []string{
 	"update_channel",
 	"update_outcome",
 	"update_status",
+	"voice_quality",
 	"voice_resampling",
 	"voice_volume",
 	"volume_down_word",

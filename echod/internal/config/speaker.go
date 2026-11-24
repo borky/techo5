@@ -62,6 +62,10 @@ type Speaker struct {
 	// parts of words are heard (media.Louder, #304). Off by default.
 	LouderSpeech bool `json:"louder_speech,omitempty"`
 
+	// VoiceQuality is the rate replies and announcements are asked for and played at: the pipeline's
+	// 16 kHz unless set (VoiceQuality.Rate).
+	VoiceQuality VoiceQuality `json:"voice_quality,omitempty"`
+
 	// ClearerSpeech takes the tuning's low-band lift down while replies and announcements play
 	// (speaker.Player.SetClearerSpeech, techo5-dot#25). Off by default.
 	ClearerSpeech bool `json:"clearer_speech,omitempty"`
@@ -159,6 +163,10 @@ func (s Speaker) Daytime() int {
 
 func (w SpeakerWriter) Resampling(v Resampling) error {
 	return w.st.Update(func(c *Config) { c.Speaker.Resampling = v })
+}
+
+func (w SpeakerWriter) VoiceQuality(v VoiceQuality) error {
+	return w.st.Update(func(c *Config) { c.Speaker.VoiceQuality = v })
 }
 
 // Stereo saves whether athena's internal speakers play in stereo.
@@ -262,6 +270,48 @@ func (r Resampling) Label() string {
 		return "Repeat samples"
 	}
 	return string(r)
+}
+
+// VoiceQuality is the rate replies and announcements are asked of Home Assistant and played at. The
+// pipeline's own rate, 16 kHz, keeps nothing above 8 kHz, which is where the consonants that make
+// speech crisp are; a text to speech engine makes more than that (Home Assistant Cloud's voices are
+// 24 kHz), and the codec plays 48 kHz. Unset is the pipeline's rate, as it always was.
+type VoiceQuality string
+
+const (
+	// VoiceStandard is the pipeline's 16 kHz, the default.
+	VoiceStandard VoiceQuality = ""
+	// VoiceHigh is 24 kHz, the rate Home Assistant Cloud's voices are made at.
+	VoiceHigh VoiceQuality = "high"
+	// VoiceHighest is the codec's own 48 kHz, for an engine that makes more than 24 kHz.
+	VoiceHighest VoiceQuality = "highest"
+)
+
+// VoiceQualities are the choices, in the order they are offered.
+func VoiceQualities() []VoiceQuality {
+	return []VoiceQuality{VoiceStandard, VoiceHigh, VoiceHighest}
+}
+
+// Rate is the sample rate the quality stands for; anything unknown is the standard one.
+func (q VoiceQuality) Rate() int {
+	switch q {
+	case VoiceHigh:
+		return 24000
+	case VoiceHighest:
+		return 48000
+	}
+	return 16000
+}
+
+// Label is how the setting is shown.
+func (q VoiceQuality) Label() string {
+	switch q {
+	case VoiceHigh:
+		return "High (24 kHz)"
+	case VoiceHighest:
+		return "Highest (48 kHz)"
+	}
+	return "Standard (16 kHz)"
 }
 
 // VoiceOffset saves how far the assistant's voice sits from the volume, clamped to the range of steps.

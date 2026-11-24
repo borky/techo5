@@ -139,6 +139,10 @@ type Player struct {
 	outputMode   OutputMode
 	outputModeMu sync.Mutex
 
+	// voiceAt is the upsampler for voice at each rate other than the pipeline's, made when first used
+	// (PlayVoiceAt), under voiceMu.
+	voiceAt map[int]*upsampler
+
 	voiceMu    sync.Mutex
 	voice      Resampler
 	resampling config.Resampling
@@ -1302,6 +1306,37 @@ func (p *Player) PlayVoice(mono []int16) {
 	p.Play(out)
 }
 
+// PlayVoiceAt queues mono speech at rate: PlayVoice's 16 kHz through the resampling chosen for it, and
+// Voice Quality's higher rates (24 and 48 kHz) through a filter of their own, each keeping its state
+// between calls as PlayVoice's does. Speech is brought to one of those rates before it gets here; one
+// the codec's rate is not a whole multiple of is not played, and the log says so.
+func (p *Player) PlayVoiceAt(mono []int16, rate int) {
+	if rate == VoiceRate || rate <= 0 {
+		p.PlayVoice(mono)
+		return
+	}
+	p.Play(p.voiceAtRate(mono, rate))
+}
+
+// voiceAtRate is PlayVoiceAt's speech as the codec takes it, through rate's upsampler.
+func (p *Player) voiceAtRate(mono []int16, rate int) []int16 {
+	if Rate%rate != 0 {
+		slog.Warn("speech at a rate the speaker does not play", "rate", rate)
+		return nil
+	}
+	p.voiceMu.Lock()
+	defer p.voiceMu.Unlock()
+	u := p.voiceAt[rate]
+	if u == nil {
+		if p.voiceAt == nil {
+			p.voiceAt = map[int]*upsampler{}
+		}
+		u = newUpsampler(Rate / rate)
+		p.voiceAt[rate] = u
+	}
+	return u.Run(mono, make([]int16, 0, len(mono)*(Rate/rate)*Channels))
+}
+
 // Drain discards anything queued but not yet played, for a barge-in. The resampler's history goes
 // with it: whatever comes next is a different utterance.
 func (p *Player) Drain() {
@@ -1312,6 +1347,9 @@ func (p *Player) Drain() {
 
 	p.voiceMu.Lock()
 	p.voice.Reset()
+	for _, u := range p.voiceAt {
+		u.Reset()
+	}
 	p.voiceMu.Unlock()
 }
 
@@ -1383,7 +1421,11 @@ func (p *Player) Underruns() uint64 { return p.underruns.Load() }
 func (p *Player) Clipped() uint64 {
 	p.voiceMu.Lock()
 	defer p.voiceMu.Unlock()
-	return p.voice.Clipped()
+	n := p.voice.Clipped()
+	for _, u := range p.voiceAt {
+		n += u.clipped
+	}
+	return n
 }
 
 // Queued reports how many frames are waiting, so a caller can tell when playback has finished.
