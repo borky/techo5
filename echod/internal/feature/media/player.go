@@ -94,6 +94,11 @@ type Player struct {
 	haSounds *esphome.Switch
 	// louder is the Louder speech switch (Louder, #304).
 	louder *esphome.Switch
+
+	// quality is Voice Quality: the rate replies and announcements are asked of Home Assistant and
+	// played at (SpeechRate). It changes the formats the player offers, which Home Assistant reads as
+	// it connects, so a change takes a reconnection (describeFormats).
+	quality *esphome.Select
 	// clearer is the Clearer speech switch (speaker.Player.SetClearerSpeech, techo5-dot#25).
 	clearer *esphome.Switch
 	// top is the Louder top volume switch (speaker.Player.SetLouderTop, #304), nil where no tuning
@@ -307,6 +312,14 @@ func build() *Player {
 				Category: esphome.CategoryConfig,
 			},
 		},
+		quality: &esphome.Select{
+			Base: esphome.Base{
+				ObjectID: "voice_quality",
+				Name:     "Voice quality",
+				Icon:     "mdi:waveform",
+				Category: esphome.CategoryConfig,
+			},
+		},
 		onTurn: &esphome.Select{
 			Base: esphome.Base{
 				ObjectID: "media_on_turn",
@@ -438,7 +451,7 @@ func build() *Player {
 	}
 
 	// The player itself stays on the device: it is what people reach for. These are how it behaves.
-	bases := []*esphome.Base{&p.resampling.Base, &p.onTurn.Base, &p.duck.Base, &p.jack.Base, &p.asp.Base,
+	bases := []*esphome.Base{&p.resampling.Base, &p.quality.Base, &p.onTurn.Base, &p.duck.Base, &p.jack.Base, &p.asp.Base,
 		&p.bass.Base, &p.treble.Base, &p.quiet.Base, &p.night.Base, &p.voiceVol.Base, &p.callVol.Base, &p.nearMiss.Base, &p.haSounds.Base, &p.louder.Base, &p.clearer.Base}
 	if speaker.HasJack {
 		bases = append(bases, &p.output.Base)
@@ -491,6 +504,7 @@ func build() *Player {
 	p.output.Set(outputAutomatic)
 	component.Bind(p.resampling, speaker.Resamplings(), speaker.Get().SetResampling,
 		config.Set().Speaker().Resampling)
+	component.Bind(p.quality, config.VoiceQualities(), p.setVoiceQuality, config.Set().Speaker().VoiceQuality)
 
 	// The speaker settles this: a device whose tuning would not load stays off however it is set. What
 	// is saved is what was asked, not what it managed — a device that cannot tune today may be able to
@@ -608,11 +622,13 @@ func build() *Player {
 	return p
 }
 
-// describeFormats puts on the player the formats for where replies play now (FormatsFor). A device
+// describeFormats puts on the player the formats for where replies play now and at what Voice Quality
+// (FormatsFor). A device
 // that cannot hear has no replies to send anywhere, and keeps its own. Only where no connection can
 // be reading them: Restore, before anything serves, and component.Between.
 func (p *Player) describeFormats(c config.Config) {
-	p.mp.SupportedFormats = FormatsFor(layout.HasMicrophone() && c.Brain.RepliesElsewhere())
+	p.mp.SupportedFormats = FormatsFor(layout.HasMicrophone() && c.Brain.RepliesElsewhere(),
+		c.Speaker.VoiceQuality.Rate())
 }
 
 func (p *Player) Name() string { return "media player" }
@@ -698,6 +714,34 @@ func (p *Player) LouderTopAvailable() bool { return p.top != nil }
 // LouderTop is whether Louder top volume is on.
 func (p *Player) LouderTop() bool { return p.top != nil && p.top.Get() }
 
+// SetVoiceQuality changes the rate replies and announcements are asked for and played at, from Home
+// Assistant or the setup page, and saves it.
+func (p *Player) SetVoiceQuality(q config.VoiceQuality) {
+	q = p.setVoiceQuality(q)
+	if err := config.Set().Speaker().VoiceQuality(q); err != nil {
+		slog.Error("saving a setting failed", "setting", p.quality.ObjectID, "err", err)
+	}
+	p.quality.Set(q.Label())
+	slog.Info("setting changed", "setting", p.quality.ObjectID, "using", q)
+}
+
+// setVoiceQuality applies a Voice Quality before it is saved. Speech fetched from then on is at its
+// rate (SpeechRate reads the setting); Home Assistant learns the new format, and whether the device
+// still says it has a speaker of its own (voice.Offer), when it next connects, so a change of rate has
+// it connect again, once the device is idle rather than in the middle of a reply or a call. By then the
+// setting is saved, and the formats are put on the player between the two connections
+// (describeFormats). Until then, speech it converts to the old rate is brought to the new one here.
+// Where replies play on another player, neither the formats nor the offer depend on the quality
+// (FormatsFor, voice.Offer), so there is nothing to reconnect for.
+func (p *Player) setVoiceQuality(q config.VoiceQuality) config.VoiceQuality {
+	c := config.Get()
+	elsewhere := layout.HasMicrophone() && c.Brain.RepliesElsewhere()
+	if !elsewhere && q.Rate() != c.Speaker.VoiceQuality.Rate() {
+		component.ReconnectWhenIdle.Emit(struct{}{})
+	}
+	return q
+}
+
 // SetLouderSpeech turns Louder speech on or off, from Home Assistant, the setup page or the screen.
 func (p *Player) SetLouderSpeech(on bool) {
 	if err := config.Set().Speaker().LouderSpeech(on); err != nil {
@@ -709,7 +753,7 @@ func (p *Player) SetLouderSpeech(on bool) {
 }
 
 func (p *Player) Entities() []esphome.Entity {
-	out := []esphome.Entity{p.mp, p.jack, p.resampling, p.onTurn, p.duck, p.asp, p.bass, p.treble,
+	out := []esphome.Entity{p.mp, p.jack, p.resampling, p.quality, p.onTurn, p.duck, p.asp, p.bass, p.treble,
 		p.quiet, p.night, p.voiceVol, p.callVol, p.nearMiss, p.haSounds, p.louder, p.clearer, p.sleep.sel}
 	// Asked as the entities are listed (once, as the API starts): the mixer if it opens by then,
 	// which leaves out a board that turned out not to have the amplifier, or still may have it.
@@ -808,6 +852,8 @@ func (p *Player) Restore(c config.Config) {
 	slog.Info("restored", "what", "volume", "step", c.Speaker.Volume, "of", VolumeSteps)
 
 	component.Restore(p.resampling, c.Speaker.Resampling, speaker.Get().SetResampling)
+	// Its formats were put on the player with the rest (describeFormats, above).
+	component.Restore(p.quality, c.Speaker.VoiceQuality, func(q config.VoiceQuality) config.VoiceQuality { return q })
 
 	component.Restore(p.onTurn, c.Media.OnTurn, func(v config.OnTurn) config.OnTurn { return v })
 
@@ -925,7 +971,7 @@ func (p *Player) command(c esphome.MediaCommand) {
 		p.Set(int(math.Round(float64(c.Volume) * VolumeSteps)))
 	}
 
-	// An announcement is a url too, but a short one at the pipeline's rate, and it interrupts rather
+	// An announcement is a url too, but a short one at Voice Quality's rate, and it interrupts rather
 	// than replacing what is playing. It goes through the same path as one from the voice assistant.
 	if c.HasMediaURL && c.MediaURL != "" {
 		switch {
@@ -999,7 +1045,9 @@ func (p *Player) command(c esphome.MediaCommand) {
 func (p *Player) announce(url string) {
 	p.Sounding(true)
 	claim := speaker.Sound().ClaimSpeech("announce", func(ctx context.Context, spk *speaker.Player) error {
-		return PlaySpeech(ctx, url, &SpeechStream{Buffer: AnnounceBuffer}, spk)
+		// At Voice Quality's rate, which is the rate the announcement format Home Assistant converts
+		// it to says.
+		return PlaySpeech(ctx, url, &SpeechStream{Buffer: AnnounceBuffer, Rate: SpeechRate()}, spk)
 	})
 
 	// The claim ends once the audio has been heard, not once it has been queued, so this is where

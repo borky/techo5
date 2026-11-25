@@ -50,8 +50,17 @@ func newStream(splices, underruns uint64, buffer time.Duration) *stream {
 		if phone.RepliesIntoCall() {
 			phone.Get().Say(out)
 		}
-	}}
+	}, SayWanted: func() bool { return phone.RepliesIntoCall() && phone.Get().Talking() }}
 	return s
+}
+
+// rate is the rate the reply's audio is at: Voice Quality's when it is fetched, the pipeline's when
+// Home Assistant streams it over the API.
+func (s *stream) rate() int {
+	if s.speech.Rate > 0 {
+		return s.speech.Rate
+	}
+	return speaker.VoiceRate
 }
 
 // send hands a chunk to whoever is playing it. A queue this deep only fills if audio is arriving
@@ -98,7 +107,7 @@ func (s *stream) play(ctx context.Context, p *speaker.Player, started func()) er
 // body arrives the way a streamed reply does, and goes through the same cushion. A fetch that fails
 // before any audio is the url's fault, and is said; one that fails part way has played what came.
 func (s *stream) fetch(ctx context.Context, p *speaker.Player, url string, started func()) error {
-	err := media.FetchVoice(ctx, url, func(data []byte) { s.take(data, p, started) })
+	err := media.FetchVoiceAt(ctx, url, s.rate(), func(data []byte) { s.take(data, p, started) })
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -118,7 +127,7 @@ func (s *stream) finish(p *speaker.Player) {
 		if at.IsZero() {
 			at = time.Now() // a reply shorter than the cushion starts here
 		}
-		replyPlaying(at, replyAudioSeconds(s.bytes), true)
+		replyPlaying(at, replyAudioSecondsAt(s.bytes, s.rate()), true)
 	}
 }
 
@@ -136,6 +145,6 @@ func (s *stream) take(data []byte, p *speaker.Player, started func()) {
 	s.peak = s.speech.Peak()
 	if queued {
 		s.playingAt = s.speech.PlayingAt()
-		replyPlaying(s.playingAt, replyAudioSeconds(s.bytes), false)
+		replyPlaying(s.playingAt, replyAudioSecondsAt(s.bytes, s.rate()), false)
 	}
 }

@@ -74,6 +74,9 @@ var whenIdle = &idleReconnect{
 // joins a reconnect already waiting for a wake word, and keeps the same gap between them.
 func ReconnectWhenIdle() { whenIdle.ask() }
 
+// A feature that cannot import this one asks through the component hook.
+func init() { component.ReconnectWhenIdle.Listen(func(struct{}) { ReconnectWhenIdle() }) }
+
 // ask has Home Assistant reconnect once the device is idle. Asking while a reconnect is already
 // waiting joins it.
 func (r *idleReconnect) ask() {

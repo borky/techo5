@@ -33,6 +33,10 @@ const (
 // on across chunks. The zero value is ready.
 type Louder struct {
 	env float64
+
+	// Rate is the rate the speech is at: zero is the pipeline's. The level follows a word at the same
+	// speed in time whatever the rate.
+	Rate int
 }
 
 var (
@@ -40,15 +44,20 @@ var (
 	louderReleaseK = math.Exp(-1 / (louderRelease * speaker.VoiceRate))
 )
 
-// Process returns in compressed, made up and soft-limited, at speaker.VoiceRate.
+// Process returns in compressed, made up and soft-limited, at the Louder's rate.
 func (l *Louder) Process(in []int16) []int16 {
+	attackK, releaseK := louderAttackK, louderReleaseK
+	if l.Rate > 0 && l.Rate != speaker.VoiceRate {
+		attackK = math.Exp(-1 / (louderAttack * float64(l.Rate)))
+		releaseK = math.Exp(-1 / (louderRelease * float64(l.Rate)))
+	}
 	out := make([]int16, len(in))
 	for i, s := range in {
 		x := float64(s) / 32768
 		a := math.Abs(x)
-		k := louderReleaseK
+		k := releaseK
 		if a > l.env {
-			k = louderAttackK
+			k = attackK
 		}
 		l.env = k*l.env + (1-k)*a
 		g := louderMakeup

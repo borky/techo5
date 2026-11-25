@@ -57,7 +57,9 @@ const Features = esphome.DefaultVoiceFeatures |
 // the flag Home Assistant makes the reply in the media player's announcement format (media.FormatsFor)
 // and still says where it is at TTS_END, which is all a reply sent elsewhere has ever used: its url.
 // Nothing is lost on the way back either, as a reply the player does not take and plays here is
-// fetched from the same url and brought down to the speaker's rate on the device.
+// fetched from the same url and brought to the speaker's rate on the device. Voice Quality above
+// Standard takes the flag out for the same reason with replies here: the announcement format is then
+// at its rate (Offer).
 func FeaturesFor(elsewhere bool) esphome.VoiceFeature {
 	if elsewhere {
 		return Features &^ esphome.FeatureSpeaker
@@ -70,18 +72,33 @@ func FeaturesFor(elsewhere bool) esphome.VoiceFeature {
 // device's usual offer.
 var unstreamed atomic.Bool
 
-// Offer is the voice features to tell the next connection about, for where replies play now. Home
-// Assistant reads them once per connection, so they are worked out afresh for each one, and what was
-// offered is kept: until the reconnect that follows a change, a turn goes by what this connection was
-// told rather than by the setting (streamedReplies).
+// Offer is the voice features to tell the next connection about, for where replies play now and at
+// what Voice Quality: a reply player, or a quality above Standard, needs the reply made in the
+// announcement format (media.FormatsFor), so either takes the speaker out. Home Assistant reads them
+// once per connection, so they are worked out afresh for each one, and what was offered is kept: until
+// the reconnect that follows a change, a turn goes by what this connection was told rather than by the
+// setting (streamedReplies).
 func Offer() esphome.VoiceFeature {
-	f := FeaturesFor(config.Get().Brain.RepliesElsewhere())
+	c := config.Get()
+	f := FeaturesFor(c.Brain.RepliesElsewhere() || c.Speaker.VoiceQuality.Rate() != speaker.VoiceRate)
 	unstreamed.Store(f&esphome.FeatureSpeaker == 0)
 	return f
 }
 
 // streamedReplies is whether Home Assistant is streaming replies over the API on this connection.
 func streamedReplies() bool { return !unstreamed.Load() }
+
+// deliveryFor is the slot's Reply delivery as it can be had: Streamed, for a reply played here on a
+// connection with no reply streamed over the API (streamedReplies, as at a Voice Quality above
+// Standard), is fetched as Early, the nearest thing without the stream. A reply player is handed the
+// url as the slot's setting says, as it always was.
+func deliveryFor(slot int) config.Delivery {
+	d := wakeword.Delivery(slot)
+	if d == config.DeliveryStream && !streamedReplies() && replyPlayer() == "" {
+		return config.DeliveryEarly
+	}
+	return d
+}
 
 type Voice struct {
 	vs        *esphome.VoiceSatellite

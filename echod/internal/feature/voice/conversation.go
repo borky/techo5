@@ -750,13 +750,13 @@ func (c *conversation) turnEvent(e event) {
 		// The turn has to be claimed before the audio arrives: Home Assistant closes the run as soon
 		// as it has handed over the text, and a turn still only thinking would take that as the end
 		// and go idle, discarding everything that followed.
-		if c.phase != phaseIdle && wakeword.Delivery(c.slot) == config.DeliveryStream && replyPlayer() == "" {
+		if c.phase != phaseIdle && deliveryFor(c.slot) == config.DeliveryStream && replyPlayer() == "" {
 			c.speak("")
 		}
 
 	case evEarlyReply:
 		if c.phase == phaseIdle || c.phase == phaseReplying || c.runURL == "" ||
-			wakeword.Delivery(c.slot) != config.DeliveryEarly {
+			deliveryFor(c.slot) != config.DeliveryEarly {
 			return
 		}
 		// A player chosen for replies is handed the url now too, rather than once the reply is written
@@ -777,15 +777,15 @@ func (c *conversation) turnEvent(e event) {
 		}
 		// A player chosen for replies needs the url, whatever the slot's setting is. So does a reply
 		// on a connection told the device has no speaker of its own (Offer): no streamed copy is
-		// coming, as for a player cleared on the setup page before Home Assistant has reconnected.
-		if wakeword.Delivery(c.slot) == config.DeliveryStream && replyPlayer() == "" && streamedReplies() {
+		// coming, and deliveryFor has it fetched early instead.
+		if deliveryFor(c.slot) == config.DeliveryStream && replyPlayer() == "" {
 			return
 		}
 		// Already playing as it is written, here or on the chosen player: this is the same reply, and
 		// sending it again would have the player say it twice. Without the offer (an agent that does
 		// not stream), it is still fetched here as it arrives rather than whole; a player is sent it
 		// whole, as it always was.
-		if wakeword.Delivery(c.slot) == config.DeliveryEarly {
+		if deliveryFor(c.slot) == config.DeliveryEarly {
 			if c.phase == phaseReplying && c.reply.early {
 				return
 			}
@@ -1307,6 +1307,8 @@ func (c *conversation) speakReply(url string, early bool) {
 	switch {
 	case early:
 		s := newStream(c.speaker.Splices(), c.speaker.Underruns(), wakeword.Buffer(c.slot))
+		// Fetched, it comes at Voice Quality's rate; streamed over the API it is the pipeline's.
+		s.speech.Rate = media.SpeechRate()
 		c.reply.stream = s
 		errand = func(ctx context.Context, p *speaker.Player) error {
 			if c.playElsewhere(ctx, id, url, playing, true) {
@@ -2005,11 +2007,11 @@ func (c *conversation) reported(dry time.Time) {
 		return
 	}
 
-	seconds := float64(s.bytes) / float64(2*mic.Rate)
+	seconds := replyAudioSecondsAt(s.bytes, s.rate())
 	took := dry.Sub(s.playingAt).Seconds()
 
 	slog.Info("reply played",
-		"via", wakeword.Delivery(c.slot),
+		"via", deliveryFor(c.slot),
 		"bytes", s.bytes,
 		"seconds", math.Round(seconds*100)/100,
 		"took", math.Round(took*100)/100,

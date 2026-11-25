@@ -57,6 +57,8 @@ func speakerSection(w http.ResponseWriter, token string) {
 	louder := c.Speaker.LouderSpeech
 	fmt.Fprintf(w, `<p><label><input type="checkbox" name="louder" value="yes" style="width:auto"%s> Louder speech:
 	  replies and announcements compressed so the quiet parts of words are heard; music is not changed</label><input type="hidden" name="was_louder" value="%t"></p>`, checkedIf(louder), louder)
+	choiceField(w, "voicequality", "Voice quality: the rate replies and announcements are asked of Home Assistant and played at; above Standard keeps the consonants a 16 kHz voice loses (Home Assistant reconnects to the device when it changes)",
+		config.Labels(config.VoiceQualities()), c.Speaker.VoiceQuality.Label())
 
 	if models := wake.Lib().Ours(); len(models) > 0 {
 		cur := c.Wake.Slot(0).ID
@@ -260,6 +262,11 @@ func saveSpeaker(r *http.Request) string {
 	if was := r.PostFormValue("was_jack_sleep"); was != "" && p.JackSleepAvailable() {
 		if on := r.PostFormValue("jack_sleep") == "yes"; strconv.FormatBool(on) != was {
 			p.SetJackSleep(on)
+		}
+	}
+	if v, ok := changed(r, "voicequality"); ok {
+		if q, ok := config.ByLabel(config.VoiceQualities(), v); ok {
+			p.SetVoiceQuality(q)
 		}
 	}
 	if was := r.PostFormValue("was_louder"); was != "" {

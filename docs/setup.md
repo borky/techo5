@@ -1398,6 +1398,23 @@ noticeable near the top. It applies to the speaker only: the headphone jack and 
 High settings can distort, and they make the wake word harder to catch over loud music, since
 the music reaching the microphones is louder too.
 
+**Voice quality** (Standard by default; the setup page under **Speaker and voice**, and the **Voice
+quality** select in Home Assistant's **Playback** configuration) is the sample rate replies and
+announcements are asked of Home Assistant and played at. **Standard (16 kHz)** is the rate the voice
+pipeline works at, and keeps nothing above 8 kHz, which is where the consonants that make a voice
+crisp are (s, t, f). **High (24 kHz)** is the rate Home Assistant Cloud's voices are made at, so
+they arrive whole; **Highest (48 kHz)** is the speaker's own rate, for a text to speech engine that
+makes more than 24 kHz. Every choice plays at the same loudness while **Voice resampling** is at its
+default, Band limited (the 24 and 48 kHz voices always go through a filter of that kind). Home
+Assistant learns the new rate by connecting again, which the device has it do once no reply, call or
+announcement is in progress (music playing doesn't hold it back). It applies to replies and to announcements. Home Assistant makes a reply at
+16 kHz for a device that says it can play speech streamed over the API, so above Standard the device
+stops saying so: replies come as files at the chosen rate, and a wake word whose **Reply delivery**
+is **Streamed** has its reply fetched as **Early** until the quality is Standard again. With a
+[reply player](#replies-on-another-speaker) chosen, the replies that player gets are at 48 kHz
+whatever Voice quality is. The direct and realtime assistants' replies stay at 16 kHz, and so does
+everything sent into a call.
+
 Under Settings → **Sound**, or on the device's Assist satellite in Home Assistant:
 
 - **Wake word**: Okay Nabu, Hey Jarvis, Alexa and others. Choosing none is fine if you only want

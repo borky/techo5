@@ -22,10 +22,11 @@ func announcement(t *testing.T, fs []esphome.MediaFormat) esphome.MediaFormat {
 	return esphome.MediaFormat{}
 }
 
-// Replies sent to another player are asked for at the card's full rate, mono (#715); replies here keep
-// the voice rate. Music is the same either way.
+// Replies sent to another player are asked for at the card's full rate, mono (#715), whatever Voice
+// Quality is; replies here are at Voice Quality's rate, the voice rate unless it is set higher. Music is
+// the same either way.
 func TestFormatsForWhereRepliesPlay(t *testing.T) {
-	here, elsewhere := FormatsFor(false), FormatsFor(true)
+	here, elsewhere := FormatsFor(false, speaker.VoiceRate), FormatsFor(true, speaker.VoiceRate)
 	if len(here) != len(Formats) || &here[0] != &Formats[0] {
 		t.Fatal("replies here do not ask for the usual formats")
 	}
@@ -39,6 +40,15 @@ func TestFormatsForWhereRepliesPlay(t *testing.T) {
 	if elsewhere[0] != Formats[0] || elsewhere[0].Announcement {
 		t.Errorf("music changed with the reply player: %+v", elsewhere[0])
 	}
+	if a := announcement(t, FormatsFor(false, 24000)); a.SampleRate != 24000 || a.Channels != 1 {
+		t.Errorf("replies here at High: announcements at %d Hz, %d channels", a.SampleRate, a.Channels)
+	}
+	if a := announcement(t, FormatsFor(true, 24000)); a.SampleRate != speaker.Rate {
+		t.Errorf("replies elsewhere at High: announcements at %d Hz, want %d", a.SampleRate, speaker.Rate)
+	}
+	if got := FormatsFor(false, 24000)[0]; got != Formats[0] {
+		t.Errorf("music changed with Voice Quality: %+v", got)
+	}
 }
 
 // The player takes its formats from the setting, and a device that cannot hear keeps its own whatever
@@ -49,6 +59,13 @@ func TestThePlayerDescribesItsFormats(t *testing.T) {
 	p.describeFormats(config.Get())
 	if announcement(t, p.mp.SupportedFormats).SampleRate != speaker.VoiceRate {
 		t.Fatal("with no player the announcement rate is not the voice rate")
+	}
+	if err := config.Set().Speaker().VoiceQuality(config.VoiceHigh); err != nil {
+		t.Fatal(err)
+	}
+	p.describeFormats(config.Get())
+	if got := announcement(t, p.mp.SupportedFormats).SampleRate; got != uint32(config.VoiceHigh.Rate()) {
+		t.Fatalf("at High with no player the announcement rate is %d", got)
 	}
 	if err := config.Set().Brain().SetReplyPlayer("media_player.kitchen"); err != nil {
 		t.Fatal(err)

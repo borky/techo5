@@ -84,3 +84,61 @@ func clamp16(v float32) int16 {
 	}
 	return int16(v)
 }
+
+// upsampler is sinc for voice at a rate the codec's is a whole multiple of other than the pipeline's:
+// the same polyphase low pass at the input's Nyquist, the same taps a phase and the same headroom, at
+// phases of its own. Voice Quality's 24 kHz is two phases; 48 kHz is one, which is no filter at all,
+// only the headroom, so every quality plays speech at the same level.
+type upsampler struct {
+	phases  int
+	filter  []float32
+	hist    [voiceTaps]float32
+	clipped uint64
+}
+
+func newUpsampler(phases int) *upsampler {
+	u := &upsampler{phases: phases}
+	if phases == 1 {
+		return u
+	}
+	n := phases * voiceTaps
+	u.filter = make([]float32, n)
+	center := float64(n-1) / 2
+	for i := range u.filter {
+		x := (float64(i) - center) / float64(phases)
+		s := 1.0
+		if x != 0 {
+			s = math.Sin(math.Pi*x) / (math.Pi * x)
+		}
+		w := 0.54 - 0.46*math.Cos(2*math.Pi*float64(i)/float64(n-1))
+		u.filter[i] = float32(s * w * 0.9)
+	}
+	return u
+}
+
+func (u *upsampler) Reset() { u.hist = [voiceTaps]float32{} }
+
+// Run appends the interleaved stereo result of mono to out.
+func (u *upsampler) Run(mono []int16, out []int16) []int16 {
+	for _, s := range mono {
+		if u.phases == 1 {
+			v := clamp16(float32(s) * 0.9)
+			out = append(out, v, v)
+			continue
+		}
+		copy(u.hist[:], u.hist[1:])
+		u.hist[voiceTaps-1] = float32(s)
+		for p := range u.phases {
+			var acc float32
+			for k := range voiceTaps {
+				acc += u.filter[p+k*u.phases] * u.hist[voiceTaps-1-k]
+			}
+			if acc > math.MaxInt16 || acc < math.MinInt16 {
+				u.clipped++
+			}
+			v := clamp16(acc)
+			out = append(out, v, v)
+		}
+	}
+	return out
+}

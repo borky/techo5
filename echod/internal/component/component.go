@@ -111,6 +111,11 @@ type Restorer interface {
 // server is a component like any other and may not exist.
 var Reconnect hook.Hook[struct{}]
 
+// ReconnectWhenIdle asks for a Reconnect once the device is idle (setup.ReconnectWhenIdle), so a
+// change to what the device says it is does not cut off a reply, a call or an announcement. A hook,
+// for a feature the setup page imports and so cannot import back.
+var ReconnectWhenIdle hook.Hook[struct{}]
+
 // Between fires while nothing is connected: after one spell of serving has ended, every connection with
 // it, and before the next one begins. It is the one moment something an entity says about itself (its
 // category, say) can be changed with no connection reading it, since each one is told again what every
