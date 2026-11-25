@@ -20,6 +20,11 @@ type Microphone struct {
 	// during a reply competes with the room rather than with the reply.
 	Cancel bool `json:"cancel"`
 
+	// Suppress takes down, after the built-in canceller, the echo it leaves behind (aec.Suppressor):
+	// what a small speaker adds at volume and the room's tail past the filter. Off unless somebody
+	// turns it on, so the path is what it was; WebRTC's canceller has a suppressor of its own.
+	Suppress bool `json:"suppress_echo,omitempty"`
+
 	// CancelEngine is which canceller does it: the built-in linear filter, or WebRTC's in a helper
 	// process where the image has it.
 	CancelEngine CancelEngine `json:"cancel_engine,omitempty"`
@@ -156,6 +161,10 @@ func (w MicrophoneWriter) Mixing(v Mixing) error {
 
 func (w MicrophoneWriter) Cancel(v bool) error {
 	return w.st.Update(func(c *Config) { c.Microphone.Cancel = v })
+}
+
+func (w MicrophoneWriter) Suppress(v bool) error {
+	return w.st.Update(func(c *Config) { c.Microphone.Suppress = v })
 }
 
 func (w MicrophoneWriter) CancelEngine(v CancelEngine) error {

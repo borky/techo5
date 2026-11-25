@@ -50,6 +50,18 @@ func tapsWanted() int {
 // what it learns from it.
 const cancelMu = 0.1
 
+// suppressOver and suppressFloorDB set the residual echo suppressor after the built-in filter
+// (aec.Suppressor), where Microphone echo suppression turns it on (SetSuppressing): twice the leftover echo it estimates is taken off, and no bin loses more than
+// 10 dB. Measured on an Echo Show 5 1st gen with loud music and the wake word said over it every five
+// seconds for two minutes, replayed through the daemon's own path: the filter alone heard it 5 times,
+// with the suppressor 7 or 8 (a change as small as its delay moves one either way), most scores rising
+// from 0.4-0.7 to over 0.9; 30 s of the same music alone scored nothing near a wake word either way.
+// A floor of -15 dB heard no more and took more off a voice; once over the estimate heard fewer.
+const (
+	suppressOver    = 2
+	suppressFloorDB = -10
+)
+
 // refQuiet is the mean square per sample, at int16 scale, below which the loopback counts as silence.
 // About -76 dBFS. Below it there is no echo to remove, so the filter is skipped entirely and the frame
 // costs nothing — which is what keeps this free on an idle device. It has to sit well under a
@@ -101,6 +113,45 @@ type canceller struct {
 
 	// hold counts down the samples still to filter after the loopback went quiet. Reader-only.
 	hold int
+
+	// sup takes down what the built-in filter leaves (suppressOver). WebRTC's canceller has its own.
+	// Its output is SuppressorDelay (40 ms) late, so a run starting puts that much silence into what
+	// the microphone hands on, and a run ending drops the 40 ms still in flight: a wake chime that
+	// starts a run while someone goes on talking leaves a 40 ms pause in their words. The switches
+	// fade over switchFade rather than step, and every start restarts its audio (restartSup) and
+	// keeps what it learned of the leak, as the filter keeps its path. Reader-only.
+	sup *aec.Suppressor
+	// starting says the next block out of sup is the first since it restarted, to fade into, and
+	// fromFilter that it fades from the filter's output rather than the microphone: the block before
+	// was canceled (the suppressor turned on, or the engine changed, in the middle of a run).
+	starting, fromFilter bool
+	// suppressing is whether sup runs at all (SetSuppressing), and stopping that it was just turned
+	// off, so the next block fades from what it still held into the filter's own output.
+	suppressing, stopping bool
+}
+
+// switchFade is how long, in samples, the switches into and out of the suppressor's late output fade
+// across: 10 ms, which takes the step out without smearing a word.
+const switchFade = Rate / 100
+
+// restartSup starts the suppressor's audio over, for a run starting or the engine changing under one:
+// what it held belongs to another stretch, or to the other engine's. Nothing is left in flight to fade
+// out of, so a fade out still waiting is dropped.
+func (c *canceller) restartSup() {
+	c.sup.Restart()
+	c.starting = true
+	c.fromFilter = c.active.Load()
+	c.stopping = false
+}
+
+// fade writes into dst, over its first switchFade samples, a fade from from to to; past that, to.
+func fade(dst, from, to []int16) {
+	n := min(len(dst), len(from), len(to))
+	copy(dst, to[:n])
+	for i := range min(n, switchFade) {
+		r := float32(i) / switchFade
+		dst[i] = int16(float32(from[i])*(1-r) + float32(to[i])*r)
+	}
 }
 
 func newCanceller() *canceller {
@@ -110,7 +161,7 @@ func newCanceller() *canceller {
 		slog.Error("echo cancellation unavailable", "err", err)
 		return nil
 	}
-	c := &canceller{engine: "builtin"}
+	c := &canceller{engine: "builtin", sup: aec.NewSuppressor(suppressOver, suppressFloorDB), starting: true}
 	c.filter.Store(f)
 	c.adapting.Store(f.Adapting())
 	return c
@@ -138,6 +189,7 @@ func (c *canceller) fitTaps(taps int) {
 // setEngine picks the canceller: "builtin" is the LMS filter above, "webrtc" the helper process.
 // It reports what it settled on: webrtc falls back to builtin when the helper cannot start.
 func (c *canceller) setEngine(name string) string {
+	c.restartSup()
 	if c.ext != nil {
 		c.ext.Close()
 		c.ext = nil
@@ -169,6 +221,7 @@ func (c *canceller) process(mic, ref []int16) ([]int16, float64, error) {
 		c.ext.Close()
 		c.ext = nil
 		c.engine = "builtin"
+		c.restartSup()
 	}
 	f := c.filter.Load()
 	out, err := f.Process(mic, ref)
@@ -179,7 +232,8 @@ func (c *canceller) process(mic, ref []int16) ([]int16, float64, error) {
 }
 
 // apply returns mic, one fixed path (see cancelInput), with the echo removed, or nil when there is
-// nothing playing and the caller should use the mix it already has.
+// nothing playing and the caller should use the mix it already has. The block a run ends on is mic,
+// faded in from what the suppressor still held (switchFade).
 func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 	n := len(mic)
 	if cap(c.ref) < n {
@@ -202,6 +256,15 @@ func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 				"best_db", float64(c.best.Load())/1000, "last_db", float64(c.erle.Load())/1000)
 			c.erle.Store(0)
 			c.best.Store(0)
+			if c.ext == nil && (c.suppressing || c.stopping) {
+				// The first block back on the plain path fades in from what the suppressor still
+				// held, rather than stepping from 40 ms ago to now.
+				c.mono = append(c.mono[:0], mic...)
+				fade(c.mono, c.sup.InFlight(), mic)
+				c.restartSup()
+				return c.mono
+			}
+			c.restartSup()
 		}
 		return nil
 	}
@@ -219,6 +282,26 @@ func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 	if err != nil {
 		slog.Error("echo cancellation failed", "err", err)
 		return nil
+	}
+	if c.ext == nil && c.stopping {
+		c.stopping = false
+		fade(out, c.sup.InFlight(), out)
+		c.restartSup()
+	}
+	if c.ext == nil && c.suppressing {
+		filtered := out
+		out = c.sup.Process(mic, filtered)
+		if c.starting {
+			// The suppressor's first block is silence: fade into it from what the block before carries
+			// on into, the microphone as it is now at a run's start (the plain path), or the filter's
+			// output when the suppressor came in during the run.
+			from := mic
+			if c.fromFilter {
+				from = filtered
+			}
+			c.starting, c.fromFilter = false, false
+			fade(out, from, out)
+		}
 	}
 	erle := int64(erleDB * 1000)
 	c.erle.Store(erle)
@@ -299,6 +382,36 @@ func (s *Source) SetCanceling(on bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.canceling = on
+}
+
+// SetSuppressing turns the residual echo suppressor after the built-in canceller on or off
+// (aec.Suppressor). Off, the default, is the canceller's output as it was before the suppressor
+// existed. Either way the switch fades, as a run starting or ending does.
+func (s *Source) SetSuppressing(on bool) {
+	if s.cancel == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.cancel
+	switch {
+	case on && !c.suppressing:
+		c.restartSup()
+	case !on && c.suppressing:
+		// Only where the suppressor was in the path: in a run, on the built-in canceller.
+		c.stopping = c.active.Load() && c.ext == nil
+	}
+	c.suppressing = on
+}
+
+// Suppressing is whether the residual echo suppressor is on.
+func (s *Source) Suppressing() bool {
+	if s.cancel == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cancel.suppressing
 }
 
 // SetCancelEngine chooses which canceller runs — "builtin" or "webrtc" — and reports what it
