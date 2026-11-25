@@ -1364,6 +1364,16 @@ louder: steps 0 to 16 are unchanged, and the steps above go into the speaker's t
 8 dB at step 30. Like Speaker gain, it can distort on some music at the top steps; turn it off if it
 does.
 
+**Stock volume curve** (Echo Show 5 1st gen only, with the speaker tuning on; off by default; the
+setup page under **Speaker and voice**, and the **Stock volume curve** switch in Home Assistant's
+**Playback** configuration) plays each volume step as loud as the same step did under Fire OS. The
+tuning is the same either way; what changes is how loud the sound goes into it. Without the switch,
+step 30 is about as loud as step 15 was under Fire OS, so matching Fire OS's loudness takes a higher
+step, and the higher steps use the tuning's flatter filters. With it, a step keeps the extra bass and
+treble Fire OS gave it at that loudness. The top steps are then much louder than without it (step 30
+about 20 dB louder), and the tuning's compressor works as hard as it did under Fire OS; turn the
+volume down after switching it on.
+
 **Headphone jack sleeps when idle** (devices with a headphone jack, which leaves out the Echo Input:
 its line out is its speaker; off by default; the setup page under **Speaker and voice**, and the
 switch in Home Assistant's **Playback** configuration) switches the jack's output off after 10

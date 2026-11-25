@@ -70,6 +70,10 @@ type Speaker struct {
 	// them (speaker.Player.SetLouderTop, #304). Off by default.
 	LouderTop bool `json:"louder_top,omitempty"`
 
+	// StockCurve puts the stock firmware's volume curve in front of the tuning, where one has been
+	// measured for it (speaker.Player.SetStockCurve). Off by default.
+	StockCurve bool `json:"stock_volume_curve,omitempty"`
+
 	// JackSleep takes the headphone path down while nothing plays, with the jack the output, so powered
 	// speakers on it do not hiss between sounds (speaker.Player.SetJackSleep, #537). Off by default:
 	// it pops going down and coming back.
@@ -197,6 +201,11 @@ func (w SpeakerWriter) ClearerSpeech(v bool) error {
 
 func (w SpeakerWriter) LouderTop(v bool) error {
 	return w.st.Update(func(c *Config) { c.Speaker.LouderTop = v })
+}
+
+// StockCurve saves whether the stock firmware's volume curve goes in front of the tuning.
+func (w SpeakerWriter) StockCurve(v bool) error {
+	return w.st.Update(func(c *Config) { c.Speaker.StockCurve = v })
 }
 
 // JackSleep saves whether the headphone jack's path comes down while nothing plays.

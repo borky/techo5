@@ -44,6 +44,11 @@ func speakerSection(w http.ResponseWriter, token string) {
 		fmt.Fprintf(w, `<p><label><input type="checkbox" name="top" value="yes" style="width:auto"%s> Louder top volume:
 	  the steps above 16 go up to 8 dB hotter into the tuning, for music that stays too quiet at full volume; can distort with Speaker gain raised</label><input type="hidden" name="was_top" value="%t"></p>`, checkedIf(top), top)
 	}
+	if p.StockCurveAvailable() {
+		sc := p.StockCurve()
+		fmt.Fprintf(w, `<p><label><input type="checkbox" name="stock_curve" value="yes" style="width:auto"%s> Stock volume curve:
+	  each step as loud as under the stock firmware, through the same tuning, so the quieter steps keep its extra bass and treble; the top steps are much louder than without it</label><input type="hidden" name="was_stock_curve" value="%t"></p>`, checkedIf(sc), sc)
+	}
 	if p.JackSleepAvailable() {
 		js := p.JackSleep()
 		fmt.Fprintf(w, `<p><label><input type="checkbox" name="jack_sleep" value="yes" style="width:auto"%s> Headphone jack sleeps when idle:
@@ -245,6 +250,11 @@ func saveSpeaker(r *http.Request) string {
 	if was := r.PostFormValue("was_top"); was != "" && p.LouderTopAvailable() {
 		if on := r.PostFormValue("top") == "yes"; strconv.FormatBool(on) != was {
 			p.SetLouderTop(on)
+		}
+	}
+	if was := r.PostFormValue("was_stock_curve"); was != "" && p.StockCurveAvailable() {
+		if on := r.PostFormValue("stock_curve") == "yes"; strconv.FormatBool(on) != was {
+			p.SetStockCurve(on)
 		}
 	}
 	if was := r.PostFormValue("was_jack_sleep"); was != "" && p.JackSleepAvailable() {

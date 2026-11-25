@@ -168,6 +168,11 @@ type Player struct {
 	on        atomic.Bool
 	stale     atomic.Bool
 
+	// stock is the stock firmware's curve (stock_curve.go), where this tuning has one and the curve
+	// in front is not already the unit's own, and stockOn whether Stock volume curve is on.
+	stock   *[VolumeSteps + 1]float64
+	stockOn atomic.Bool
+
 	// tone is the listener's own shelves, waiting to be picked up: the chain belongs to the write
 	// loop, so a setting changed from anywhere else is left here and applied there. applied is what
 	// the chain is carrying now, and is the write loop's alone.
@@ -404,6 +409,9 @@ func New() *Player {
 		if db, ok := topLifts[t.Name()]; ok {
 			l := liftTop(curve, db)
 			p.lifted = &l
+		}
+		if s, ok := stockCurve(t.Name()); ok && !ownVolumeTable() {
+			p.stock = &s
 		}
 	}
 	return p
@@ -1090,7 +1098,8 @@ func (p *Player) fill(buf []byte) {
 	p.sinkRing(needOn, need)
 	gain, step := p.Volume(), mainStep
 	mediaK, bellK, queueK, underK := float32(1), float32(0), float32(1), float32(1)
-	// Read once, so a period goes out on one curve even when Louder top volume changes during it.
+	// Read once, so a period goes out on one curve even when Louder top volume or Stock volume curve
+	// changes during it.
 	curve := p.inFront()
 	if ringing || queueStep != mainStep || underStep != mainStep {
 		var first *[VolumeSteps + 1]float64

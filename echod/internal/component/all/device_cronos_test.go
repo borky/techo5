@@ -8,6 +8,7 @@ import (
 
 	"github.com/HuskerMinion/techo5/echod/internal/component"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/video"
+	"github.com/HuskerMinion/techo5/echod/internal/hardware/speaker"
 )
 
 // notOnThisDevice is what the Echo Show 5 does not put up: it has no LED ring, so nothing that sets
@@ -22,7 +23,17 @@ var notOnThisDevice = append(append([]string(nil), ringOnly...), notOnPanel...)
 // Microphone off, which only a board with a red mute light offers (not the Skylight or a panel).
 // A panel's list goes without what notOnPanel names and has onlyOnPanel's besides.
 var deviceSpecific = append(slices.DeleteFunc([]string{"airplay", "airplay_sets_volume", "spotify_connect", "video", "dlna_video", "video_state", "video_title", "video_error", "clock_hold_gesture", "screen_night_alarm", "screen_microphone_off"},
-	func(id string) bool { return slices.Contains(notOnPanel, id) }), onlyOnPanel...)
+	func(id string) bool { return slices.Contains(notOnPanel, id) }), append(append([]string(nil), onlyOnPanel...), stockCurve()...)...)
+
+// stock_volume_curve is put up where the tuning played has a stock curve and the curve in front is not
+// the unit's own (hardware/speaker/stock_curve.go): a Show 5 1st gen with its tuning, never a test
+// machine, which has none, so here it is expected only where that holds.
+func stockCurve() []string {
+	if speaker.Get().StockCurveAvailable() {
+		return []string{"stock_volume_curve"}
+	}
+	return nil
+}
 
 // The Show plays videos from Home Assistant: the actions an automation calls are there. A panel has no
 // video player (video.Here), and no actions for one.
